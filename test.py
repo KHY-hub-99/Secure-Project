@@ -4,6 +4,7 @@ import torch
 import transformers
 from transformers import pipeline
 import requests
+from datetime import datetime
 
 # 오직 에러 메시지만 출력 (경고 무시)
 transformers.utils.logging.set_verbosity_error()
@@ -396,86 +397,92 @@ def run_security_test():
     if not test_cases:
         return
 
-    print("\n" + "="*80)
-    print(f"Automated Red Teaming Started (Total: {len(test_cases)} cases)")
-    print("="*80)
+    # 저장할 파일명 생성 (예: security_report_20260415_163000.txt)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    report_file = f"security_report_{timestamp}.txt"
 
-    # 전체 통계 및 카테고리별 통계 초기화
-    results = {"pass": 0, "fail": 0}
-    cat_stats = {
-        "LLM01": {"pass": 0, "fail": 0},
-        "LLM02": {"pass": 0, "fail": 0},
-        "LLM06": {"pass": 0, "fail": 0},
-        "LLM07": {"pass": 0, "fail": 0}
-    }
+    with open(report_file, "w", encoding="utf-8") as f:
+        # 화면과 파일에 동시에 출력하는 헬퍼 함수
+        def log_and_print(message):
+            print(message)
+            f.write(message + "\n")
 
-    for index, case in enumerate(test_cases, start=1):
-        cat = case['category']
-        print(f"\n▶ [{index}/{len(test_cases)}] ID: {case['id']} | Category: {cat} | Sub: {case['subcategory']}")
+        log_and_print("\n" + "="*80)
+        log_and_print(f"Automated Red Teaming Started (Total: {len(test_cases)} cases)")
+        log_and_print("="*80)
 
-        # 1. 방어 모델(Blue Agent) 실행
-        blue_res = run_blue_agent(case['prompt'])
+        results = {"pass": 0, "fail": 0}
+        cat_stats = {
+            "LLM01": {"pass": 0, "fail": 0},
+            "LLM02": {"pass": 0, "fail": 0},
+            "LLM06": {"pass": 0, "fail": 0},
+            "LLM07": {"pass": 0, "fail": 0}
+        }
 
-        # 2. 1차 검증 (보안 지침 기반 형식 검사)
-        primary_result = evaluate_response(cat, case['prompt'], blue_res, BLUE_SYSTEM_PROMPT)
-        
-        # 3. 2차 검증 (항상 실행, 1차 의견 전달)
-        meta_result = meta_evaluate_response(
-            cat, 
-            case['prompt'], 
-            blue_res, 
-            primary_result["eval_text"], 
-            BLUE_SYSTEM_PROMPT
-        )
-        
-        # 4. 최종 판정 결정 logic
-        # 1차의 결과(is_safe)를 기반으로 하되, 2차에서 뒤집기(is_overruled)가 발생했는지 체크
-        if meta_result["is_overruled"]:
-            if "FAIL" in meta_result["new_verdict"]:
-                is_safe_final = False
+        for index, case in enumerate(test_cases, start=1):
+            cat = case['category']
+            log_and_print(f"\n▶ [{index}/{len(test_cases)}] ID: {case['id']} | Category: {cat} | Sub: {case['subcategory']}")
+
+            # 1. 방어 모델(Blue Agent) 실행
+            blue_res = run_blue_agent(case['prompt'])
+
+            # 2. 1차 검증
+            primary_result = evaluate_response(cat, case['prompt'], blue_res, BLUE_SYSTEM_PROMPT)
+            
+            # 3. 2차 검증 (항상 실행)
+            meta_result = meta_evaluate_response(
+                cat, 
+                case['prompt'], 
+                blue_res, 
+                primary_result["eval_text"], 
+                BLUE_SYSTEM_PROMPT
+            )
+            
+            # 4. 최종 판정 결정 logic
+            if meta_result["is_overruled"]:
+                is_safe_final = "PASS" in meta_result["new_verdict"]
             else:
-                is_safe_final = True
-        else:
-            is_safe_final = primary_result["is_safe"]
+                is_safe_final = primary_result["is_safe"]
+            
+            # 5. 결과 출력 및 기록
+            status_icon = "PASS" if is_safe_final else "FAIL"
+            log_and_print("-" * 60)
+            log_and_print(f"\n[Red Prompt] : {case['prompt']}\n")
+            log_and_print(f"[Blue Reply]  : {blue_res}\n")
+            log_and_print(f"\n[Final Result] : {status_icon}\n")
+            
+            final_reason = meta_result["final_analysis"]
+            log_and_print(f"  └ [Security Insight] {final_reason}\n")
+
+            if is_safe_final:
+                results["pass"] += 1
+                cat_stats[cat]["pass"] += 1
+            else:
+                results["fail"] += 1
+                cat_stats[cat]["fail"] += 1
+
+            log_and_print("-" * 60)
         
-        # 5. 결과 출력 (2차 검증기의 ANALYSIS만 최종 Reason으로 사용)
-        status_icon = "PASS" if is_safe_final else "FAIL"
-        print(f"\n[Red Prompt] : {case['prompt']}")
-        print(f"[Blue Reply]  : {blue_res}")
-        print(f"\n[Final Result] : {status_icon}")
+        # 최종 리포트 기록
+        log_and_print("\n" + "="*80)
+        log_and_print("FINAL SECURITY REPORT")
+        log_and_print("="*80)
+        log_and_print(f"Total Test Cases  : {len(test_cases)}")
+        log_and_print(f"Total Safe (PASS) : {results['pass']}")
+        log_and_print(f"Total Vuln (FAIL) : {results['fail']}")
         
-        # 2차 검증기가 분석한 '보안 통찰'을 최종 결과로 출력
-        final_reason = meta_result["final_analysis"]
-        print(f"  └ [Security Insight] {final_reason}\n")
+        overall_rate = (results['pass'] / len(test_cases)) * 100 if len(test_cases) > 0 else 0
+        log_and_print(f"Overall Defend Rate: {overall_rate:.1f}%\n")
+        
+        log_and_print("[Category Breakdown]")
+        for cat, stats in cat_stats.items():
+            total = stats['pass'] + stats['fail']
+            if total > 0:
+                rate = (stats['pass'] / total) * 100
+                log_and_print(f" - {cat}: {total:3d} cases | Pass: {stats['pass']:3d} | Fail: {stats['fail']:3d} | Defend Rate: {rate:>5.1f}%")
 
-        # 통계 기록 (최종 판정 기준)
-        if is_safe_final:
-            results["pass"] += 1
-            cat_stats[cat]["pass"] += 1
-        else:
-            results["fail"] += 1
-            cat_stats[cat]["fail"] += 1
-
-        print("-" * 60)
-    
-    print("\n" + "="*80)
-    print("FINAL SECURITY REPORT")
-    print("="*80)
-    print(f"Total Test Cases  : {len(test_cases)}")
-    print(f"Total Safe (PASS) : {results['pass']}")
-    print(f"Total Vuln (FAIL) : {results['fail']}")
-    
-    overall_rate = (results['pass'] / len(test_cases)) * 100 if len(test_cases) > 0 else 0
-    print(f"Overall Defend Rate: {overall_rate:.1f}%\n")
-    
-    print("[Category Breakdown]")
-    for cat, stats in cat_stats.items():
-        total = stats['pass'] + stats['fail']
-        if total > 0:
-            rate = (stats['pass'] / total) * 100
-            print(f" - {cat}: {total:3d} cases | Pass: {stats['pass']:3d} | Fail: {stats['fail']:3d} | Defend Rate: {rate:>5.1f}%")
-
-    print("="*80)
+        log_and_print("="*80)
+        log_and_print(f"\n리포트가 저장되었습니다: {report_file}")
 
 # [메인 실행부]
 if __name__ == "__main__":
