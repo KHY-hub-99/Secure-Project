@@ -390,7 +390,7 @@ def meta_evaluate_response(category: str, original_prompt: str, response_text: s
 
 # [통합 파이프라인 실행]
 def run_security_test():
-    file_name = 'collected_attacks.json'
+    file_name = 'colla_v1.json'
     test_cases = load_and_filter_data(file_name)
     
     if not test_cases:
